@@ -1,5 +1,6 @@
-# HMS_Smoke_PM25_Analysis_App_V2
-This application provides tools for analyzing HMS Smoke and PM2.5 data, as well as daily air quality, meteorological data, and back trajectory analysis
+# HMS Smoke PM2.5 Analysis App V2
+
+This application provides tools for analyzing HMS Smoke and PM2.5 data, as well as daily air quality, meteorological data, and back trajectory analysis.
 
 ## Features
 
@@ -7,6 +8,23 @@ This application provides tools for analyzing HMS Smoke and PM2.5 data, as well 
 - Daily Air Quality, Meteorological, HMS Smoke, and Back Trajectory Analysis
 - Interactive plots and data tables
 - Data filtering and download capabilities
+
+## Tutorial
+
+For a detailed walkthrough of the app's features and usage, please watch our tutorial video:
+
+[![HMS Smoke PM2.5 Analysis App Tutorial](https://img.youtube.com/vi/86-No7dH3OE/0.jpg)](https://www.youtube.com/watch?v=86-No7dH3OE)
+
+## Screenshots
+
+Here are some screenshots of the app in action:
+
+![HMS Plot](https://github.com/user-attachments/assets/84c6428a-4ec0-4281-ac51-b51e10ddd92c)
+
+<img width="1600" alt="Met_Data" src="https://github.com/user-attachments/assets/bdf05a09-bef4-4e0e-a07f-ab01ef323b3f">
+
+<img width="981" alt="Trajectory" src="https://github.com/user-attachments/assets/fc70a543-3708-44d5-8672-6e66ed5cf32c">
+
 
 ## Installation and Setup
 
