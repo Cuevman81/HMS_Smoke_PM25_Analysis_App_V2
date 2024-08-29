@@ -11,7 +11,7 @@ This application provides tools for analyzing HMS Smoke and PM2.5 data, as well 
 
 ## Tutorial
 
-For a detailed walkthrough of the app's features and usage, please watch our tutorial video:
+For a detailed walkthrough of the app's features and usage, please watch tutorial video on youtube:
 
 [![HMS Smoke PM2.5 Analysis App Tutorial](https://img.youtube.com/vi/86-No7dH3OE/0.jpg)](https://www.youtube.com/watch?v=86-No7dH3OE)
 
