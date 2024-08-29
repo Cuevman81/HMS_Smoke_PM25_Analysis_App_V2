@@ -62,7 +62,7 @@ shiny::runApp()
 
 ## Usage
 
-1. Open the app in your web browser.
+1. Open the app in R Studio after cloning.
 2. Navigate between the "HMS Smoke PM2.5 Analysis" and "Daily AQ, Met, HMS Smoke, and Back Trajectory Analysis" tabs.
 3. Use the input controls to select dates, locations, and other parameters.
 4. Generate plots and data tables using the action buttons.
