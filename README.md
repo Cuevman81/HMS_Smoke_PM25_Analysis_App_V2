@@ -71,11 +71,3 @@ shiny::runApp()
 ## Support
 
 For questions, comments, or to report bugs, please email RCuevas@mdeq.ms.gov.
-
-## License
-
-[Add your license information here]
-
-## Acknowledgements
-
-[Add any acknowledgements or credits here]
