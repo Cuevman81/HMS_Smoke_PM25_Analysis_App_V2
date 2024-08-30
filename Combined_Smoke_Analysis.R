@@ -653,44 +653,43 @@ generate_hms_smoke_plots <- function(selectedDate, selectedState) {
 
 # New function to run trajectory model
 run_trajectory_model <- function(lat, lon, heights, duration, start_date, daily_hours, direction, met_type) {
-  # Use absolute paths
-  project_dir <- normalizePath(".", winslash = "/")
-  met_dir <- file.path(project_dir, "met")
-  exec_dir <- file.path(project_dir, "out")
-  
-  # Create directories if they don't exist
-  dir.create(met_dir, recursive = TRUE, showWarnings = FALSE)
-  dir.create(exec_dir, recursive = TRUE, showWarnings = FALSE)
-  
-  # Get the path to hyts_std.exe
-  hysplit_exe <- normalizePath(system.file("win", "hyts_std.exe", package = "splitr"), winslash = "/")
-  
-  # Create and run the trajectory model for each height
-  map(heights, function(height) {
-    create_trajectory_model() %>% 
-      add_trajectory_params(
-        lat = lat,
-        lon = lon,
-        height = height,
-        duration = duration,
-        days = as.character(start_date),
-        daily_hours = daily_hours,
-        direction = direction,
-        met_type = met_type,
-        met_dir = met_dir,
-        exec_dir = exec_dir
-      ) %>% 
-      run_model()
+  tryCatch({
+    # Use absolute paths
+    project_dir <- normalizePath(".", winslash = "/")
+    met_dir <- file.path(project_dir, "met")
+    exec_dir <- file.path(project_dir, "out")
+    
+    # Create directories if they don't exist
+    dir.create(met_dir, recursive = TRUE, showWarnings = FALSE)
+    dir.create(exec_dir, recursive = TRUE, showWarnings = FALSE)
+    
+    # Get the path to hyts_std.exe
+    hysplit_exe <- normalizePath(system.file("win", "hyts_std.exe", package = "splitr"), winslash = "/")
+    
+    # Create and run the trajectory model for each height
+    results <- map(heights, function(height) {
+      create_trajectory_model() %>% 
+        add_trajectory_params(
+          lat = lat,
+          lon = lon,
+          height = height,
+          duration = duration,
+          days = as.character(start_date),
+          daily_hours = daily_hours,
+          direction = direction,
+          met_type = met_type,
+          met_dir = met_dir,
+          exec_dir = exec_dir
+        ) %>% 
+        run_model()
+    })
+    
+    return(list(status = "success", data = results))
+  }, error = function(e) {
+    return(list(status = "error", message = conditionMessage(e)))
   })
 }
 
-# UI Definition
-library(shiny)
-library(shinythemes)
-library(shinydashboard)
-library(shinyWidgets)
-library(shinycssloaders)
-
 
 # UI Definition
 library(shiny)
@@ -698,6 +697,7 @@ library(shinythemes)
 library(shinydashboard)
 library(shinyWidgets)
 library(shinycssloaders)
+
 
 ui <- tagList(
   # Modify the CSS to add more positioning control
@@ -867,12 +867,16 @@ ui <- tagList(
                                               status = "primary"
                                             ),
                                             selectInput("met_type", "Meteorology Type", 
-                                                        choices = c("reanalysis"), selected = "reanalysis"),
-                                            actionButton("generateTrajectory", "Generate Back Trajectory", 
-                                                         icon("play"), class = "btn-success btn-block")
+                                                        choices = c("reanalysis", "gdas1"), 
+                                                        selected = "reanalysis"),
+                                            tags$style(HTML(".btn-generate-trajectory { font-size: 0.9em; white-space: normal; height: auto; }")),
+                                            actionButton("generateTrajectory", "Generate Trajectory & Smoke", 
+                                                         icon("play"), 
+                                                         class = "btn-success btn-block btn-generate-trajectory")
                                           )
                                    ),
                                    column(9,
+                                          htmlOutput("lastTrajectoryUpdate"),
                                           fluidRow(
                                             box(
                                               width = 12,
@@ -904,6 +908,14 @@ ui <- tagList(
 
 # Server Definition
 server <- function(input, output, session) {
+  # Set a higher timeout value
+  options(timeout = 300)  # Set timeout to 300 seconds (5 minutes)
+  
+  # Add this near the top of your server function
+  values <- reactiveValues(
+    lastSelectedState = NULL,
+    lastSelectedSitename = NULL
+  )
   
   # Add this function at the top of your server logic
   get_date_breaks <- function(date_range) {
@@ -1604,7 +1616,10 @@ server <- function(input, output, session) {
     
     state_choices <- setNames(state_codes[valid_indices], tools::toTitleCase(state_names[valid_indices]))
     
-    updatePickerInput(session, "trajectoryStateCode", choices = state_choices)
+    # Update choices without changing the selection
+    updatePickerInput(session, "trajectoryStateCode", 
+                      choices = state_choices, 
+                      selected = if (is.null(values$lastSelectedState)) state_choices[1] else values$lastSelectedState)
   })
   
   # Update Sitename choices for trajectory
@@ -1622,7 +1637,19 @@ server <- function(input, output, session) {
       showNotification("No valid Sitenames found for the selected State.", type = "warning")
     }
     
-    updatePickerInput(session, "trajectorySitename", choices = sitenames)
+    # Update choices without changing the selection if possible
+    updatePickerInput(session, "trajectorySitename", 
+                      choices = sitenames, 
+                      selected = if (is.null(values$lastSelectedSitename) || !(values$lastSelectedSitename %in% sitenames)) sitenames[1] else values$lastSelectedSitename)
+  })
+  
+  # Add these new observe blocks right here, after the existing ones
+  observeEvent(input$trajectoryStateCode, {
+    values$lastSelectedState <- input$trajectoryStateCode
+  })
+  
+  observeEvent(input$trajectorySitename, {
+    values$lastSelectedSitename <- input$trajectorySitename
   })
   
   # Get selected site information
@@ -1643,21 +1670,41 @@ server <- function(input, output, session) {
   })
   
   # Generate trajectory data
-  trajectoryData <- eventReactive(input$generateTrajectory, {
+  trajectoryData <- reactiveVal(NULL)
+  
+  observeEvent(input$generateTrajectory, {
     req(selectedSite())
     site <- selectedSite()
     
-    withProgress(message = 'Generating back trajectory...', value = 0, {
-      run_trajectory_model(site$Latitude, site$Longitude, 
-                           c(input$height1, input$height2, input$height3),
-                           input$duration, input$trajectoryDate, 
-                           as.numeric(input$daily_hours),
-                           input$direction, input$met_type)
+    withProgress(message = 'Generating back trajectory and smoke overlay...', value = 0, {
+      trajectory_result <- run_trajectory_model(site$Latitude, site$Longitude, 
+                                                c(input$height1, input$height2, input$height3),
+                                                input$duration, input$trajectoryDate, 
+                                                as.numeric(input$daily_hours),
+                                                input$direction, input$met_type)
+      
+      if (trajectory_result$status == "error") {
+        showNotification(
+          paste("Error generating trajectory:", trajectory_result$message),
+          type = "error",
+          duration = NULL
+        )
+        trajectoryData(NULL)
+      } else {
+        smoke_data <- parse_hms_smoke_data(input$trajectoryDate, "National")
+        
+        trajectoryData(list(
+          trajectory = trajectory_result$data, 
+          smoke = smoke_data, 
+          timestamp = Sys.time(),
+          date = input$trajectoryDate,
+          sitename = input$trajectorySitename
+        ))
+      }
     })
   })
   
-  # Fetch national HMS Smoke data for trajectory plot
-  trajectoryHMSData <- reactive({
+  trajectoryHMSData <- eventReactive(input$generateTrajectory, {
     req(input$trajectoryDate)
     parse_hms_smoke_data(input$trajectoryDate, "National")
   })
@@ -1665,112 +1712,114 @@ server <- function(input, output, session) {
   
   # Render trajectory plot with national HMS Smoke overlay
   output$trajectoryPlot <- renderPlot({
-    req(trajectoryData(), trajectoryHMSData())
-    
-    # Combine all trajectory data
-    all_trajectories <- map_dfr(trajectoryData(), get_output_tbl, .id = "height_index")
-    all_trajectories$height <- c(input$height1, input$height2, input$height3)[as.numeric(all_trajectories$height_index)]
-    
-    # Get state map data
-    states_map <- map_data("state")
-    
-    # Calculate the bounding box of all trajectories, with more padding
-    bbox <- all_trajectories %>%
-      summarize(
-        lon_min = min(lon) - 5,
-        lon_max = max(lon) + 5,
-        lat_min = min(lat) - 5,
-        lat_max = max(lat) + 5
-      )
-    
-    # Create the base plot
-    p <- ggplot() +
-      geom_polygon(data = states_map, aes(x = long, y = lat, group = group), 
-                   fill = "white", color = "black", size = 0.6)
-    
-    # Add national HMS Smoke data if available
-    if (!is.null(trajectoryHMSData()$national)) {
-      smoke_data_cropped <- st_crop(trajectoryHMSData()$national, 
-                                    xmin = bbox$lon_min, xmax = bbox$lon_max, 
-                                    ymin = bbox$lat_min, ymax = bbox$lat_max)
+    if (is.null(trajectoryData())) {
+      plot(c(0, 1), c(0, 1), type = "n", axes = FALSE, xlab = "", ylab = "")
+      text(0.5, 0.5, "Error generating trajectory. Please try different parameters.", cex = 1.2, col = "red")
+    } else {
+      data <- trajectoryData()
+      plot_date <- data$date
       
-      p <- p + geom_sf(data = smoke_data_cropped, aes(fill = Density), alpha = 0.5) +
-        scale_fill_manual(values = c("Light" = "lightblue", "Medium" = "grey", "Heavy" = "darkgrey"),
-                          name = "Smoke Density")
+      all_trajectories <- map_dfr(data$trajectory, get_output_tbl, .id = "height_index")
+      all_trajectories$height <- c(input$height1, input$height2, input$height3)[as.numeric(all_trajectories$height_index)]
+      
+      states_map <- map_data("state")
+      
+      bbox <- all_trajectories %>%
+        summarize(
+          lon_min = min(lon) - 5,
+          lon_max = max(lon) + 5,
+          lat_min = min(lat) - 5,
+          lat_max = max(lat) + 5
+        )
+      
+      p <- ggplot() +
+        geom_polygon(data = states_map, aes(x = long, y = lat, group = group), 
+                     fill = "white", color = "black", size = 0.6)
+      
+      if (!is.null(data$smoke$national)) {
+        smoke_data_cropped <- st_crop(data$smoke$national, 
+                                      xmin = bbox$lon_min, xmax = bbox$lon_max, 
+                                      ymin = bbox$lat_min, ymax = bbox$lat_max)
+        
+        p <- p + geom_sf(data = smoke_data_cropped, aes(fill = Density), alpha = 0.5) +
+          scale_fill_manual(values = c("Light" = "lightblue", "Medium" = "grey", "Heavy" = "darkgrey"),
+                            name = "Smoke Density")
+      }
+      
+      p <- p +
+        geom_path(data = all_trajectories, aes(x = lon, y = lat, color = factor(height)), size = 1) +
+        geom_point(data = all_trajectories, aes(x = lon, y = lat, color = factor(height)), size = 2) +
+        coord_sf(xlim = c(bbox$lon_min, bbox$lon_max),
+                 ylim = c(bbox$lat_min, bbox$lat_max)) +
+        theme_minimal() +
+        labs(title = paste("Trajectory Plot with National HMS Smoke Overlay\n",
+                           "Date:", format(plot_date, "%Y-%m-%d"),
+                           "- Sitename:", data$sitename),
+             x = "Longitude", 
+             y = "Latitude", 
+             color = "Height (m)") +
+        scale_color_brewer(palette = "Set1") +
+        theme(
+          panel.grid.major = element_line(color = "gray90"),
+          panel.grid.minor = element_blank(),
+          axis.text = element_text(size = 12),
+          axis.title = element_text(size = 14),
+          legend.position = "bottom",
+          plot.title = element_text(size = 16, hjust = 0.5, lineheight = 1.2)
+        )
+      
+      state_centers <- states_map %>%
+        group_by(region) %>%
+        summarize(long = mean(long), lat = mean(lat))
+      
+      p + geom_text_repel(data = state_centers %>% 
+                            filter(long >= bbox$lon_min, long <= bbox$lon_max,
+                                   lat >= bbox$lat_min, lat <= bbox$lat_max),
+                          aes(x = long, y = lat, label = region),
+                          size = 4, alpha = 0.7)
     }
-    
-    # Add trajectory paths and points
-    p <- p +
-      geom_path(data = all_trajectories, aes(x = lon, y = lat, color = factor(height)), size = 1) +
-      geom_point(data = all_trajectories, aes(x = lon, y = lat, color = factor(height)), size = 2) +
-      coord_sf(xlim = c(bbox$lon_min, bbox$lon_max),
-               ylim = c(bbox$lat_min, bbox$lat_max)) +
-      theme_minimal() +
-      labs(title = paste("Trajectory Plot with National HMS Smoke Overlay\n",
-                         "Date:", format(input$trajectoryDate, "%Y-%m-%d"),
-                         "- Sitename:", input$trajectorySitename),
-           x = "Longitude", 
-           y = "Latitude", 
-           color = "Height (m)") +
-      scale_color_brewer(palette = "Set1") +
-      theme(
-        panel.grid.major = element_line(color = "gray90"),
-        panel.grid.minor = element_blank(),
-        axis.text = element_text(size = 12),
-        axis.title = element_text(size = 14),
-        legend.position = "bottom",
-        plot.title = element_text(size = 16, hjust = 0.5, lineheight = 1.2)
-      )
-    
-    # Add state labels
-    state_centers <- states_map %>%
-      group_by(region) %>%
-      summarize(long = mean(long), lat = mean(lat))
-    
-    p + geom_text_repel(data = state_centers %>% 
-                          filter(long >= bbox$lon_min, long <= bbox$lon_max,
-                                 lat >= bbox$lat_min, lat <= bbox$lat_max),
-                        aes(x = long, y = lat, label = region),
-                        size = 4, alpha = 0.7)
   }, height = 1000, width = 1000)
   
   output$crossSectionPlot <- renderPlot({
-    req(trajectoryData())
-    
-    # Combine all trajectory data
-    all_trajectories <- map_dfr(trajectoryData(), get_output_tbl, .id = "height_index")
-    all_trajectories$starting_height <- c(input$height1, input$height2, input$height3)[as.numeric(all_trajectories$height_index)]
-    
-    # Calculate time difference
-    all_trajectories <- all_trajectories %>%
-      group_by(starting_height) %>%
-      mutate(
-        time_hours = as.numeric(difftime(traj_dt, first(traj_dt), units = "hours"))
-      ) %>%
-      ungroup()
-    
-    # Create the cross-section plot
-    ggplot(all_trajectories, aes(x = time_hours, y = height, color = factor(starting_height))) +
-      geom_line(size = 1) +
-      geom_point(size = 2) +
-      theme_minimal() +
-      labs(title = "Trajectory Cross-section", 
-           x = "Time (hours)", 
-           y = "Height (m)", 
-           color = "Starting Height (m)") +
-      scale_color_brewer(palette = "Set1") +
-      theme(
-        panel.grid.major = element_line(color = "gray90"),
-        panel.grid.minor = element_blank(),
-        axis.text = element_text(size = 10),
-        axis.title = element_text(size = 12),
-        legend.position = "bottom",
-        plot.title = element_text(size = 14, hjust = 0.5),
-        aspect.ratio = 0.4  # Adjust this value to change the aspect ratio
-      ) +
-      scale_x_reverse() +  # Reverse x-axis for backward trajectories
-      coord_cartesian(expand = FALSE)  # Remove extra space around the plot
-  }, height = 400, width = 800)  # Adjust these values to change the overall size of the plot
+    if (is.null(trajectoryData())) {
+      plot(c(0, 1), c(0, 1), type = "n", axes = FALSE, xlab = "", ylab = "")
+      text(0.5, 0.5, "Error generating trajectory. Please try different parameters.", cex = 1.2, col = "red")
+    } else {
+      data <- trajectoryData()
+      plot_date <- data$date
+      
+      all_trajectories <- map_dfr(data$trajectory, get_output_tbl, .id = "height_index")
+      all_trajectories$starting_height <- c(input$height1, input$height2, input$height3)[as.numeric(all_trajectories$height_index)]
+      
+      all_trajectories <- all_trajectories %>%
+        group_by(starting_height) %>%
+        mutate(
+          time_hours = as.numeric(difftime(traj_dt, first(traj_dt), units = "hours"))
+        ) %>%
+        ungroup()
+      
+      ggplot(all_trajectories, aes(x = time_hours, y = height, color = factor(starting_height))) +
+        geom_line(size = 1) +
+        geom_point(size = 2) +
+        theme_minimal() +
+        labs(title = paste("Trajectory Cross-section -", format(plot_date, "%Y-%m-%d")), 
+             x = "Time (hours)", 
+             y = "Height (m)", 
+             color = "Starting Height (m)") +
+        scale_color_brewer(palette = "Set1") +
+        theme(
+          panel.grid.major = element_line(color = "gray90"),
+          panel.grid.minor = element_blank(),
+          axis.text = element_text(size = 10),
+          axis.title = element_text(size = 12),
+          legend.position = "bottom",
+          plot.title = element_text(size = 14, hjust = 0.5),
+          aspect.ratio = 0.4
+        ) +
+        scale_x_reverse() +
+        coord_cartesian(expand = FALSE)
+    }
+  }, height = 400, width = 800)
   
   # In the UI, adjust the height of the crossSectionPlot:
   
