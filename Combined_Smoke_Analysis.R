@@ -969,7 +969,7 @@ server <- function(input, output, session) {
   })
   
   tier_data <- reactive({
-    data <- read.csv("https://www.epa.gov/system/files/other-files/2024-08/r_fire_excluded_tiers2019_2023_20240814.csv")
+    data <- read.csv("https://www.epa.gov/system/files/other-files/2024-08/r_fire_excluded_tiers2019_2023_20240829.csv")
     print("Tier Data Column Names:")
     print(names(data))
     data %>%
