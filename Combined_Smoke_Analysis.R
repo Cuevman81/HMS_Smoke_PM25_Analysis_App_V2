@@ -22,6 +22,8 @@ library(foreach)
 library(doParallel)
 library(furrr)
 library(future)
+library(rvest)
+library(stringr)
 
 # Global variables and functions
 state_code_to_name <- c(
@@ -98,6 +100,44 @@ state_agency_lookup <- c(
   "Wisconsin" = "Wisconsin Department of Natural Resources",
   "Wyoming" = "Wyoming Department of Environmental Quality"
 )
+
+get_latest_tiering_csv_url <- function() {
+  base_url <- "https://www.epa.gov/air-quality-analysis/pm25-tiering-tool-exceptional-events-analysis"
+  
+  tryCatch({
+    # Read the webpage
+    page <- read_html(base_url)
+    
+    # Find all links on the page
+    links <- page %>% html_nodes("a") %>% html_attr("href")
+    
+    # Filter for CSV files related to tiering
+    csv_links <- links[str_detect(links, "r_fire_excluded_tiers.*\\.csv$")]
+    
+    if (length(csv_links) == 0) {
+      warning("No tiering CSV files found on the EPA page.")
+      return(NULL)
+    }
+    
+    # Get the most recent file (assuming the date in the filename is the most recent)
+    latest_csv <- csv_links[which.max(str_extract(csv_links, "\\d{8}"))]
+    
+    # Construct the full URL
+    if (startsWith(latest_csv, "http")) {
+      full_url <- latest_csv
+    } else if (startsWith(latest_csv, "/")) {
+      full_url <- paste0("https://www.epa.gov", latest_csv)
+    } else {
+      full_url <- paste0("https://www.epa.gov/", latest_csv)
+    }
+    
+    return(full_url)
+  }, error = function(e) {
+    warning(paste("Error fetching latest CSV URL:", e$message))
+    return(NULL)
+  })
+}
+
 
 # Function to clean geometry
 clean_geometry <- function(geom) {
@@ -919,6 +959,24 @@ server <- function(input, output, session) {
   # Set a higher timeout value
   options(timeout = 300)  # Set timeout to 300 seconds (5 minutes)
   
+  tiering_csv_url <- reactiveVal(NULL)
+  update_timer <- reactiveTimer(24 * 60 * 60 * 1000)  # 24 hours in milliseconds
+  
+  # Add this function to safely get the latest URL
+  safely_get_latest_url <- function() {
+    tryCatch({
+      url <- get_latest_tiering_csv_url()
+      if (!is.null(url)) {
+        return(url)
+      } else {
+        return(NULL)
+      }
+    }, error = function(e) {
+      warning("Error fetching latest tiering CSV URL: ", conditionMessage(e))
+      return(NULL)
+    })
+  }
+  
   # Add this near the top of your server function
   trajectoryGenerated <- reactiveVal(FALSE)
   
@@ -979,15 +1037,48 @@ server <- function(input, output, session) {
     })
   })
   
+  
+  observe({
+    update_timer()  # This will invalidate the observer every 24 hours
+    
+    new_url <- safely_get_latest_url()
+    
+    if (!is.null(new_url)) {
+      current_url <- tiering_csv_url()
+      if (is.null(current_url) || new_url != current_url) {
+        tiering_csv_url(new_url)
+        showNotification("Updated tiering data is available and will be used.", type = "message")
+      }
+    }
+  })
+  
+  # Modified tier_data reactive
   tier_data <- reactive({
-    data <- read.csv("https://www.epa.gov/system/files/other-files/2024-08/r_fire_excluded_tiers2019_2023_20240829.csv")
-    print("Tier Data Column Names:")
-    print(names(data))
-    data %>%
-      mutate(
-        SITE_ID = as.character(SITE_ID),
-        month = as.integer(month)
-      )
+    # Check if we already have a valid URL
+    if (is.null(tiering_csv_url())) {
+      # If not, fetch the latest URL
+      url <- safely_get_latest_url()
+      if (is.null(url)) {
+        showNotification("Failed to fetch the latest tiering data URL. Using the last known URL.", type = "warning")
+        url <- "https://www.epa.gov/system/files/other-files/2024-08/r_fire_excluded_tiers2019_2023_20240829.csv"
+      }
+      tiering_csv_url(url)
+    }
+    
+    # Try to read the data
+    tryCatch({
+      data <- read.csv(tiering_csv_url())
+      print("Tier Data Column Names:")
+      print(names(data))
+      data %>%
+        mutate(
+          SITE_ID = as.character(SITE_ID),
+          month = as.integer(month)
+        )
+    }, error = function(e) {
+      showNotification(paste("Error reading tiering data:", e$message), type = "error")
+      NULL
+    })
   })
   
   # Reactive values
