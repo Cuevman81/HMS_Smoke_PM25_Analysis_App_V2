@@ -846,6 +846,14 @@ ui <- tagList(
                                  fluidRow(
                                    column(3,
                                           wellPanel(
+                                            h4("Back Trajectory Analysis Instructions"),
+                                            p("1. Select a date for the trajectory analysis."),
+                                            p("2. Choose a state and a specific site within that state."),
+                                            p("3. Set the starting heights for the trajectories."),
+                                            p("4. Adjust the duration and other parameters as needed."),
+                                            p("5. Click 'Generate Trajectory & Smoke' to create the plots.")
+                                          ),
+                                          wellPanel(
                                             h4("Trajectory Parameters", icon("route")),
                                             dateInput("trajectoryDate", "Select Date:", value = Sys.Date()),
                                             pickerInput("trajectoryStateCode", "State", choices = NULL, options = list(`live-search` = TRUE)),
@@ -910,6 +918,9 @@ ui <- tagList(
 server <- function(input, output, session) {
   # Set a higher timeout value
   options(timeout = 300)  # Set timeout to 300 seconds (5 minutes)
+  
+  # Add this near the top of your server function
+  trajectoryGenerated <- reactiveVal(FALSE)
   
   # Add this near the top of your server function
   values <- reactiveValues(
@@ -1700,6 +1711,7 @@ server <- function(input, output, session) {
           date = input$trajectoryDate,
           sitename = input$trajectorySitename
         ))
+        trajectoryGenerated(TRUE)  # Set to TRUE after successful generation
       }
     })
   })
@@ -1712,7 +1724,10 @@ server <- function(input, output, session) {
   
   # Render trajectory plot with national HMS Smoke overlay
   output$trajectoryPlot <- renderPlot({
-    if (is.null(trajectoryData())) {
+    if (!trajectoryGenerated()) {
+      plot(c(0, 1), c(0, 1), type = "n", axes = FALSE, xlab = "", ylab = "")
+      text(0.5, 0.5, "Welcome to the Back Trajectory Analysis!\nPlease set your parameters and click 'Generate Trajectory & Smoke' to begin.", cex = 1.2, col = "blue", adj = 0.5)
+    } else if (is.null(trajectoryData())) {
       plot(c(0, 1), c(0, 1), type = "n", axes = FALSE, xlab = "", ylab = "")
       text(0.5, 0.5, "Error generating trajectory. Please try different parameters.", cex = 1.2, col = "red")
     } else {
@@ -1781,7 +1796,10 @@ server <- function(input, output, session) {
   }, height = 1000, width = 1000)
   
   output$crossSectionPlot <- renderPlot({
-    if (is.null(trajectoryData())) {
+    if (!trajectoryGenerated()) {
+      plot(c(0, 1), c(0, 1), type = "n", axes = FALSE, xlab = "", ylab = "")
+      text(0.5, 0.5, "Cross-section plot will appear here after generating the trajectory.", cex = 1.2, col = "blue")
+    } else if (is.null(trajectoryData())) {
       plot(c(0, 1), c(0, 1), type = "n", axes = FALSE, xlab = "", ylab = "")
       text(0.5, 0.5, "Error generating trajectory. Please try different parameters.", cex = 1.2, col = "red")
     } else {
