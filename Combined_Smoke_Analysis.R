@@ -905,9 +905,11 @@ ui <- tagList(
                                             checkboxGroupButtons(
                                               "daily_hours", "Daily Hours",
                                               choices = c(0:23), 
-                                              selected = c(0, 12),
+                                              selected = c(0),  # Set a default selection
                                               status = "primary",
-                                              checkIcon = list(yes = icon("ok", lib = "glyphicon"))
+                                              checkIcon = list(yes = icon("ok", lib = "glyphicon")),
+                                              width = "100%",
+                                              size = "sm"
                                             ),
                                             radioGroupButtons(
                                               "direction", "Direction",
@@ -959,8 +961,18 @@ server <- function(input, output, session) {
   # Set a higher timeout value
   options(timeout = 300)  # Set timeout to 300 seconds (5 minutes)
   
+  # Add the validation function here
+  validateTrajectoryInputs <- function(input) {
+    if (length(input$daily_hours) == 0) {
+      return("Please select at least one daily hour to run the trajectory model.")
+    }
+    return(NULL)
+  }
+  
   tiering_csv_url <- reactiveVal(NULL)
   update_timer <- reactiveTimer(24 * 60 * 60 * 1000)  # 24 hours in milliseconds
+  
+  
   
   # Add this function to safely get the latest URL
   safely_get_latest_url <- function() {
@@ -1776,18 +1788,30 @@ server <- function(input, output, session) {
   
   observeEvent(input$generateTrajectory, {
     req(selectedSite())
+    
+    # Validate inputs
+    validation_message <- validateTrajectoryInputs(input)
+    if (!is.null(validation_message)) {
+      showNotification(validation_message, type = "error", duration = NULL)
+      return()
+    }
+    
     site <- selectedSite()
     
     withProgress(message = 'Generating back trajectory and smoke overlay...', value = 0, {
-      trajectory_result <- run_trajectory_model(site$Latitude, site$Longitude, 
-                                                c(input$height1, input$height2, input$height3),
-                                                input$duration, input$trajectoryDate, 
-                                                as.numeric(input$daily_hours),
-                                                input$direction, input$met_type)
+      # Run the trajectory model for each selected hour
+      trajectory_results <- lapply(as.numeric(input$daily_hours), function(hour) {
+        run_trajectory_model(site$Latitude, site$Longitude, 
+                             c(input$height1, input$height2, input$height3),
+                             input$duration, input$trajectoryDate, 
+                             hour,
+                             input$direction, input$met_type)
+      })
       
-      if (trajectory_result$status == "error") {
+      # Check if any of the runs resulted in an error
+      if (any(sapply(trajectory_results, function(x) x$status == "error"))) {
         showNotification(
-          paste("Error generating trajectory:", trajectory_result$message),
+          "Error generating one or more trajectories. Please check your parameters.",
           type = "error",
           duration = NULL
         )
@@ -1795,14 +1819,25 @@ server <- function(input, output, session) {
       } else {
         smoke_data <- parse_hms_smoke_data(input$trajectoryDate, "National")
         
+        # Combine all trajectory results
+        all_trajectories <- map_dfr(trajectory_results, function(result) {
+          map_dfr(result$data, get_output_tbl, .id = "height_index")
+        }, .id = "hour_index")
+        
+        all_trajectories <- all_trajectories %>%
+          mutate(
+            starting_height = c(input$height1, input$height2, input$height3)[as.numeric(height_index)],
+            starting_hour = as.numeric(input$daily_hours)[as.numeric(hour_index)]
+          )
+        
         trajectoryData(list(
-          trajectory = trajectory_result$data, 
+          trajectory = all_trajectories, 
           smoke = smoke_data, 
           timestamp = Sys.time(),
           date = input$trajectoryDate,
           sitename = input$trajectorySitename
         ))
-        trajectoryGenerated(TRUE)  # Set to TRUE after successful generation
+        trajectoryGenerated(TRUE)
       }
     })
   })
@@ -1824,11 +1859,7 @@ server <- function(input, output, session) {
     } else {
       data <- trajectoryData()
       plot_date <- data$date
-      
-      all_trajectories <- map_dfr(data$trajectory, get_output_tbl, .id = "height_index")
-      all_trajectories$height <- c(input$height1, input$height2, input$height3)[as.numeric(all_trajectories$height_index)]
-      
-      states_map <- map_data("state")
+      all_trajectories <- data$trajectory
       
       bbox <- all_trajectories %>%
         summarize(
@@ -1837,6 +1868,8 @@ server <- function(input, output, session) {
           lat_min = min(lat) - 5,
           lat_max = max(lat) + 5
         )
+      
+      states_map <- map_data("state")
       
       p <- ggplot() +
         geom_polygon(data = states_map, aes(x = long, y = lat, group = group), 
@@ -1853,8 +1886,16 @@ server <- function(input, output, session) {
       }
       
       p <- p +
-        geom_path(data = all_trajectories, aes(x = lon, y = lat, color = factor(height)), size = 1) +
-        geom_point(data = all_trajectories, aes(x = lon, y = lat, color = factor(height)), size = 2) +
+        geom_path(data = all_trajectories, 
+                  aes(x = lon, y = lat, 
+                      color = factor(starting_height),
+                      group = interaction(starting_height, starting_hour)),
+                  size = 1) +
+        geom_point(data = all_trajectories, 
+                   aes(x = lon, y = lat, 
+                       color = factor(starting_height),
+                       shape = factor(starting_hour)),
+                   size = 3) +
         coord_sf(xlim = c(bbox$lon_min, bbox$lon_max),
                  ylim = c(bbox$lat_min, bbox$lat_max)) +
         theme_minimal() +
@@ -1863,7 +1904,8 @@ server <- function(input, output, session) {
                            "- Sitename:", data$sitename),
              x = "Longitude", 
              y = "Latitude", 
-             color = "Height (m)") +
+             color = "Starting Height (m)",
+             shape = "Starting Hour") +
         scale_color_brewer(palette = "Set1") +
         theme(
           panel.grid.major = element_line(color = "gray90"),
@@ -1896,25 +1938,26 @@ server <- function(input, output, session) {
     } else {
       data <- trajectoryData()
       plot_date <- data$date
-      
-      all_trajectories <- map_dfr(data$trajectory, get_output_tbl, .id = "height_index")
-      all_trajectories$starting_height <- c(input$height1, input$height2, input$height3)[as.numeric(all_trajectories$height_index)]
+      all_trajectories <- data$trajectory
       
       all_trajectories <- all_trajectories %>%
-        group_by(starting_height) %>%
+        group_by(starting_height, starting_hour) %>%
         mutate(
           time_hours = as.numeric(difftime(traj_dt, first(traj_dt), units = "hours"))
         ) %>%
         ungroup()
       
-      ggplot(all_trajectories, aes(x = time_hours, y = height, color = factor(starting_height))) +
+      ggplot(all_trajectories, aes(x = time_hours, y = height, 
+                                   color = factor(starting_height),
+                                   linetype = factor(starting_hour))) +
         geom_line(size = 1) +
         geom_point(size = 2) +
         theme_minimal() +
         labs(title = paste("Trajectory Cross-section -", format(plot_date, "%Y-%m-%d")), 
              x = "Time (hours)", 
              y = "Height (m)", 
-             color = "Starting Height (m)") +
+             color = "Starting Height (m)",
+             linetype = "Starting Hour") +
         scale_color_brewer(palette = "Set1") +
         theme(
           panel.grid.major = element_line(color = "gray90"),
