@@ -1637,12 +1637,12 @@ server <- function(input, output, session) {
   output$hmsSmokePlotState <- renderPlot({
     req(dailyData())
     dailyData()$hms_smoke$state
-  }, height = 1200, width = 1200)  # Adjust these values as needed
+  }, height = 1000, width = 1000)  # Adjust these values as needed
   
   output$hmsSmokePlotNational <- renderPlot({
     req(dailyData())
     dailyData()$hms_smoke$national
-  }, height = 1200, width = 1200)  # Adjust these values as needed
+  }, height = 1000, width = 1000)  # Adjust these values as needed
   
   # Back Trajectory Analysis Server Logic
   trajectoryAirNowData <- reactiveVal(NULL)
