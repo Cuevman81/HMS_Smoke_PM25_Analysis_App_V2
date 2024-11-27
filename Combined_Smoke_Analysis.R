@@ -39,7 +39,7 @@ state_code_to_name <- c(
   "40" = "oklahoma", "41" = "oregon", "42" = "pennsylvania", "44" = "rhode island", 
   "45" = "south carolina", "46" = "south dakota", "47" = "tennessee", "48" = "texas", 
   "49" = "utah", "50" = "vermont", "51" = "virginia", "53" = "washington", 
-  "54" = "west virginia", "55" = "wisconsin", "56" = "wyoming"
+  "54" = "west virginia", "55" = "wisconsin", "56" = "wyoming", "84" = "wyoming"
 )
 
 # Define concentration ranges and corresponding colors globally
