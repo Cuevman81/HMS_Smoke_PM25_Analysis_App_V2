@@ -210,6 +210,37 @@ read_kml <- function(date, layer, state_sf_transformed, sites_sf) {
   })
 }
 
+check_tiering_csv <- function(url) {
+  tryCatch({
+    data <- read.csv(url)
+    print(paste("Successfully read data from:", url))
+    print(paste("Number of rows:", nrow(data)))
+    print("Column names:")
+    print(names(data))
+    print("Sample data (first 3 rows):")
+    print(head(data, 3))
+    
+    # Check for expected columns or similar named columns
+    expected_columns <- c("SITE_ID", "month", "Tier.1", "Tier.2")
+    alt_expected_columns <- c("SITE_ID", "month", "Tier1", "Tier2")
+    
+    for (col in expected_columns) {
+      if (col %in% names(data)) {
+        print(paste("Column", col, "found."))
+      } else if (gsub("\\.", "", col) %in% names(data)) {
+        print(paste("Column", gsub("\\.", "", col), "found instead of", col))
+      } else {
+        print(paste("Column", col, "not found."))
+      }
+    }
+    
+    return(TRUE)
+  }, error = function(e) {
+    print(paste("Error checking tiering CSV:", e$message))
+    return(FALSE)
+  })
+}
+
 # Function to generate combined plot for daily analysis
 generate_combined_plot <- function(selectedDate, selectedState, ASOS_Stations, aqStateCode) {
   tryCatch({
@@ -979,13 +1010,26 @@ server <- function(input, output, session) {
     tryCatch({
       url <- get_latest_tiering_csv_url()
       if (!is.null(url)) {
-        return(url)
+        print(paste("Found latest tiering CSV URL:", url))
+        if (check_tiering_csv(url)) {
+          return(url)
+        } else {
+          print("Using fallback URL instead.")
+          fallback_url <- "https://www.epa.gov/system/files/other-files/2025-02/r_fire_excluded_tiers2019_2023_20250218.csv"
+          check_tiering_csv(fallback_url)
+          return(fallback_url)
+        }
       } else {
-        return(NULL)
+        print("Could not find latest tiering CSV URL.")
+        fallback_url <- "https://www.epa.gov/system/files/other-files/2025-02/r_fire_excluded_tiers2019_2023_20250218.csv"
+        check_tiering_csv(fallback_url)
+        return(fallback_url)
       }
     }, error = function(e) {
       warning("Error fetching latest tiering CSV URL: ", conditionMessage(e))
-      return(NULL)
+      fallback_url <- "https://www.epa.gov/system/files/other-files/2025-02/r_fire_excluded_tiers2019_2023_20250218.csv"
+      check_tiering_csv(fallback_url)
+      return(fallback_url)
     })
   }
   
@@ -1065,6 +1109,8 @@ server <- function(input, output, session) {
   })
   
   # Modified tier_data reactive
+  # Modified tier_data reactive
+  # Modified tier_data reactive to handle R's automatic space-to-dot conversion
   tier_data <- reactive({
     # Check if we already have a valid URL
     if (is.null(tiering_csv_url())) {
@@ -1072,26 +1118,75 @@ server <- function(input, output, session) {
       url <- safely_get_latest_url()
       if (is.null(url)) {
         showNotification("Failed to fetch the latest tiering data URL. Using the last known URL.", type = "warning")
-        url <- "https://www.epa.gov/system/files/other-files/2024-08/r_fire_excluded_tiers2019_2023_20240829.csv"
+        url <- "https://www.epa.gov/system/files/other-files/2025-02/r_fire_excluded_tiers2019_2023_20250218.csv"
       }
       tiering_csv_url(url)
     }
     
     # Try to read the data
     tryCatch({
-      data <- read.csv(tiering_csv_url())
-      print("Tier Data Column Names:")
+      print(paste("Loading tiering data from:", tiering_csv_url()))
+      
+      # Read the CSV - spaces in column names will be converted to dots automatically
+      data <- read.csv(tiering_csv_url(), stringsAsFactors = FALSE)
+      
+      # Print column names to debug
+      print("Original Tier Data Column Names (after R's auto-conversion):")
       print(names(data))
+      
+      # Check for "tier.1" and "tier.2" (converted from "tier 1" and "tier 2")
+      if ("tier.1" %in% names(data) && "tier.2" %in% names(data)) {
+        data <- data %>%
+          rename(Tier.1 = tier.1, Tier.2 = tier.2)
+        
+        print("Renamed tier.1/tier.2 to Tier.1/Tier.2")
+      } else {
+        # Try other patterns if the expected columns aren't found
+        tier1_col <- grep("tier.*1", names(data), ignore.case = TRUE, value = TRUE)
+        tier2_col <- grep("tier.*2", names(data), ignore.case = TRUE, value = TRUE)
+        
+        print("Found other tier columns:")
+        print(c(tier1_col, tier2_col))
+        
+        if (length(tier1_col) > 0 && length(tier2_col) > 0) {
+          data <- data %>%
+            rename(Tier.1 = tier1_col[1], Tier.2 = tier2_col[1])
+          
+          print("Renamed using pattern matching")
+        } else {
+          print("No tier columns found using any method")
+          return(NULL)
+        }
+      }
+      
+      # Print updated column names
+      print("Updated Tier Data Column Names:")
+      print(names(data))
+      
+      # Print sample of data
+      print("Sample of tier data (first 3 rows):")
+      print(head(data, 3))
+      
+      # Check if the renaming was successful
+      if (!all(c("Tier.1", "Tier.2") %in% names(data))) {
+        warning("Failed to rename tier columns correctly.")
+        return(NULL)
+      }
+      
       data %>%
         mutate(
           SITE_ID = as.character(SITE_ID),
-          month = as.integer(month)
+          month = as.integer(month),
+          Tier.1 = as.numeric(Tier.1),
+          Tier.2 = as.numeric(Tier.2)
         )
     }, error = function(e) {
       showNotification(paste("Error reading tiering data:", e$message), type = "error")
-      NULL
+      print(paste("Error reading tiering data:", e$message))
+      return(NULL)
     })
   })
+  
   
   # Reactive values
   pm25Data <- reactiveVal(NULL)
@@ -1359,7 +1454,7 @@ server <- function(input, output, session) {
   
   # Create a function to generate the HMS plot
   createHMSPlot <- reactive({
-    req(filteredHMSData(), input$selectedSitenames, tier_data())
+    req(filteredHMSData(), input$selectedSitenames)
     
     tryCatch({
       filtered_data <- filteredHMSData() %>%
@@ -1372,41 +1467,134 @@ server <- function(input, output, session) {
           month = lubridate::month(date)
         )
       
-      tier_data_prepared <- tier_data() %>%
+      # Get tiering data
+      tier_data_local <- tier_data()
+      
+      # Check if tier data is available
+      if (is.null(tier_data_local)) {
+        # Return a plot without tiering if tier data is unavailable
+        showNotification("Tiering data is unavailable. Showing plot without tier thresholds.", type = "warning")
+        
+        color_mapping <- c("Light" = "lightblue", "Medium" = "darkgrey", "Heavy" = "black")
+        
+        date_info <- get_date_breaks(range(filtered_data$date))
+        
+        return(ggplot(filtered_data, aes(x = date, y = Value)) +
+                 geom_point(aes(color = Smoke_Intensity), size = 3, na.rm = TRUE) +
+                 geom_text(aes(label = round(Value, 1)), vjust = -1, size = 3, na.rm = TRUE) +
+                 scale_color_manual(values = color_mapping) +
+                 theme_minimal() +
+                 theme(
+                   axis.text.x = element_text(angle = date_info$angle, hjust = 1, vjust = 0.5, size = 8),
+                   axis.text.y = element_text(size = 8),
+                   strip.text = element_text(size = 10),
+                   axis.title = element_text(size = 12),
+                   legend.title = element_text(size = 10),
+                   legend.text = element_text(size = 8),
+                   plot.margin = margin(5, 5, 5, 5),
+                   panel.spacing = unit(1, "lines")
+                 ) +
+                 labs(x = "Date", y = "PM2.5 (μg/m³)", color = "Smoke Intensity") +
+                 facet_wrap(~ Sitename, scales = "free_y", ncol = min(3, length(input$selectedSitenames))) +
+                 scale_x_date(date_breaks = date_info$breaks, 
+                              date_labels = date_info$labels,
+                              date_minor_breaks = "1 day") +
+                 coord_cartesian(clip = "off") +
+                 labs(subtitle = paste("Averaging Period:", unique(filtered_data$Averaging_period))))
+      }
+      
+      # Check for required column names in tier data
+      tier_columns <- c("SITE_ID", "month", "Tier.1", "Tier.2")
+      missing_columns <- tier_columns[!tier_columns %in% names(tier_data_local)]
+      
+      if (length(missing_columns) > 0) {
+        # Try to find alternative column names
+        alt_columns <- gsub("\\.", "", missing_columns)
+        for (i in seq_along(missing_columns)) {
+          if (alt_columns[i] %in% names(tier_data_local)) {
+            tier_data_local <- tier_data_local %>%
+              rename(!!missing_columns[i] := !!alt_columns[i])
+          }
+        }
+        
+        # Check again for required columns
+        missing_columns <- tier_columns[!tier_columns %in% names(tier_data_local)]
+        if (length(missing_columns) > 0) {
+          showNotification(paste("Missing required columns in tiering data:", 
+                                 paste(missing_columns, collapse = ", ")), 
+                           type = "warning")
+          return(ggplot() + 
+                   annotate("text", x = 0.5, y = 0.5, 
+                            label = paste("Error: Missing required columns in tiering data:", 
+                                          paste(missing_columns, collapse = ", "))) +
+                   theme_void())
+        }
+      }
+      
+      tier_data_prepared <- tier_data_local %>%
         mutate(
           SITE_ID = as.character(SITE_ID),
           month = as.integer(month)
         )
       
+      print("Filtered data structure:")
+      print(str(filtered_data))
+      print("Tier data structure:")
+      print(str(tier_data_prepared))
+      
+      # Join the data
       merged_data <- filtered_data %>%
         left_join(tier_data_prepared, by = c("Site_ID" = "SITE_ID", "month"))
       
+      print("Merged data structure:")
+      print(str(merged_data))
+      print("Sample of merged data:")
+      print(head(merged_data))
+      
       color_mapping <- c("Light" = "lightblue", "Medium" = "darkgrey", "Heavy" = "black")
       
-      max_dates <- merged_data %>%
-        group_by(Sitename) %>%
-        summarise(max_date = max(date))
-      
+      # Create a summary dataset for tier labels that handles missing values
       tier_labels <- merged_data %>%
         group_by(Sitename) %>%
         summarise(
-          Tier1 = first(Tier.1),
-          Tier2 = first(Tier.2)
-        ) %>%
-        left_join(max_dates, by = "Sitename")
+          Tier1 = ifelse(all(is.na(Tier.1)), NA, mean(Tier.1, na.rm = TRUE)),
+          Tier2 = ifelse(all(is.na(Tier.2)), NA, mean(Tier.2, na.rm = TRUE)),
+          max_date = max(date)
+        )
       
       date_info <- get_date_breaks(range(merged_data$date))
       
-      ggplot(merged_data, aes(x = date, y = Value)) +
+      p <- ggplot(merged_data, aes(x = date, y = Value)) +
         geom_point(aes(color = Smoke_Intensity), size = 3, na.rm = TRUE) +
-        geom_text(aes(label = round(Value, 1)), vjust = -1, size = 3, na.rm = TRUE) +
-        geom_line(aes(y = Tier.1), color = "red", linetype = "dashed") +
-        geom_line(aes(y = Tier.2), color = "blue", linetype = "dashed") +
-        geom_text(data = tier_labels, aes(x = max_date, y = Tier1, label = paste("Tier 1:", round(Tier1, 1))),
-                  color = "red", hjust = 1, vjust = -0.5, size = 3) +
-        geom_text(data = tier_labels, aes(x = max_date, y = Tier2, label = paste("Tier 2:", round(Tier2, 1))),
-                  color = "blue", hjust = 1, vjust = 1.5, size = 3) +
-        scale_color_manual(values = color_mapping) +
+        geom_text(aes(label = round(Value, 1)), vjust = -1, size = 3, na.rm = TRUE)
+      
+      # Only add tier lines if they exist
+      if (any(!is.na(merged_data$Tier.1))) {
+        p <- p + geom_line(aes(y = Tier.1), color = "red", linetype = "dashed")
+      }
+      
+      if (any(!is.na(merged_data$Tier.2))) {
+        p <- p + geom_line(aes(y = Tier.2), color = "blue", linetype = "dashed")
+      }
+      
+      # Only add tier labels if they exist
+      tier_labels_filtered <- tier_labels %>% filter(!is.na(Tier1) | !is.na(Tier2))
+      
+      if (nrow(tier_labels_filtered) > 0) {
+        if (any(!is.na(tier_labels_filtered$Tier1))) {
+          p <- p + geom_text(data = tier_labels_filtered %>% filter(!is.na(Tier1)), 
+                             aes(x = max_date, y = Tier1, label = paste("Tier 1:", round(Tier1, 1))),
+                             color = "red", hjust = 1, vjust = -0.5, size = 3)
+        }
+        
+        if (any(!is.na(tier_labels_filtered$Tier2))) {
+          p <- p + geom_text(data = tier_labels_filtered %>% filter(!is.na(Tier2)), 
+                             aes(x = max_date, y = Tier2, label = paste("Tier 2:", round(Tier2, 1))),
+                             color = "blue", hjust = 1, vjust = 1.5, size = 3)
+        }
+      }
+      
+      p + scale_color_manual(values = color_mapping) +
         theme_minimal() +
         theme(
           axis.text.x = element_text(angle = date_info$angle, hjust = 1, vjust = 0.5, size = 8),
@@ -1427,50 +1615,143 @@ server <- function(input, output, session) {
         labs(subtitle = paste("Averaging Period:", unique(merged_data$Averaging_period)))
     }, error = function(e) {
       print(paste("Error in HMS Plot:", conditionMessage(e)))
-      ggplot() + 
-        annotate("text", x = 0.5, y = 0.5, label = paste("Error:", conditionMessage(e))) +
-        theme_void()
+      return(ggplot() + 
+               annotate("text", x = 0.5, y = 0.5, label = paste("Error:", conditionMessage(e))) +
+               theme_void())
     })
   })
   
   # Filtered Data
-  # Filtered Data
   filteredData <- reactive({
-    req(combinedData(), input$pm25Threshold, input$filteredSmokeIntensity, input$tierFilter, tier_data())
+    req(combinedData(), input$pm25Threshold, input$filteredSmokeIntensity, input$tierFilter)
     
     combined_data <- combinedData() %>%
       filter(Value >= input$pm25Threshold, Smoke_Intensity %in% input$filteredSmokeIntensity)
     
-    tier_data_prepared <- tier_data() %>%
+    if (input$tierFilter == "none") {
+      return(combined_data %>% 
+               select(AQSID, date, Smoke_Intensity, Averaging_period, Value, Sitename))
+    }
+    
+    tier_data_local <- tier_data()
+    
+    if (is.null(tier_data_local)) {
+      showNotification("Tiering data not available. Filtering without tier thresholds.", type = "warning")
+      return(combined_data %>% 
+               select(AQSID, date, Smoke_Intensity, Averaging_period, Value, Sitename))
+    }
+    
+    # Check for required column names in tier data
+    print("Column names in tier_data_local:")
+    print(names(tier_data_local))
+    
+    # Check if Tier.1 and Tier.2 columns exist
+    has_tier1 <- "Tier.1" %in% names(tier_data_local)
+    has_tier2 <- "Tier.2" %in% names(tier_data_local)
+    
+    if (!has_tier1 || !has_tier2) {
+      # Look for columns with spaces
+      space_tier1_col <- grep("tier\\s+1", names(tier_data_local), ignore.case = TRUE, value = TRUE)
+      space_tier2_col <- grep("tier\\s+2", names(tier_data_local), ignore.case = TRUE, value = TRUE)
+      
+      print("Columns with spaces found:")
+      print(c(space_tier1_col, space_tier2_col))
+      
+      # Rename columns with spaces if found
+      if (length(space_tier1_col) > 0) {
+        tier_data_local <- tier_data_local %>%
+          rename("Tier.1" = space_tier1_col[1])
+        has_tier1 <- TRUE
+      }
+      
+      if (length(space_tier2_col) > 0) {
+        tier_data_local <- tier_data_local %>%
+          rename("Tier.2" = space_tier2_col[1])
+        has_tier2 <- TRUE
+      }
+    }
+    
+    if (!has_tier1 || !has_tier2) {
+      showNotification("Tier columns not found in the data. Filtering without tier thresholds.", type = "warning")
+      return(combined_data %>% 
+               select(AQSID, date, Smoke_Intensity, Averaging_period, Value, Sitename))
+    }
+    
+    # Prepare tier data
+    tier_data_prepared <- tier_data_local %>%
       mutate(
         SITE_ID = as.character(SITE_ID),
-        month = as.integer(month)
+        month = as.integer(month),
+        Tier.1 = as.numeric(Tier.1),
+        Tier.2 = as.numeric(Tier.2)
       )
     
+    # Print some debugging info
+    print("Sample of tier_data_prepared:")
+    print(head(tier_data_prepared))
+    
+    # Join the data
     filtered_data <- combined_data %>%
       mutate(
         Site_ID = sub("^0", "", AQSID),
         month = lubridate::month(date)
       ) %>%
-      left_join(tier_data_prepared, by = c("Site_ID" = "SITE_ID", "month")) %>%
-      select(AQSID, date, Smoke_Intensity, Averaging_period, Value, Sitename, Tier.1, Tier.2)
+      left_join(tier_data_prepared, by = c("Site_ID" = "SITE_ID", "month"))
     
-    # Apply tier filtering
-    if (input$tierFilter == "tier2") {
-      filtered_data <- filtered_data %>% filter(Value >= Tier.2)
-    } else if (input$tierFilter == "tier1") {
-      filtered_data <- filtered_data %>% filter(Value >= Tier.1)
+    # Print sample of joined data to debug
+    print("Sample of filtered_data after join:")
+    print(head(filtered_data))
+    
+    # Select columns, making sure Tier.1 and Tier.2 exist
+    if (all(c("Tier.1", "Tier.2") %in% names(filtered_data))) {
+      filtered_data <- filtered_data %>%
+        select(AQSID, date, Smoke_Intensity, Averaging_period, Value, Sitename, Tier.1, Tier.2)
+      
+      # Apply tier filtering
+      if (input$tierFilter == "tier2") {
+        filtered_data <- filtered_data %>% 
+          filter(!is.na(Tier.2) & Value >= Tier.2)
+      } else if (input$tierFilter == "tier1") {
+        filtered_data <- filtered_data %>% 
+          filter(!is.na(Tier.1) & Value >= Tier.1)
+      }
+    } else {
+      # In case something went wrong with the join
+      showNotification("Tier columns not available after data join. Filtering without tier thresholds.", type = "warning")
+      filtered_data <- combined_data %>% 
+        select(AQSID, date, Smoke_Intensity, Averaging_period, Value, Sitename)
     }
     
-    filtered_data
+    return(filtered_data)
   })
   
   output$filteredDataTable <- renderDT({
     req(filteredData())
-    filteredData() %>%
-      mutate(date = format(date, "%Y-%m-%d")) %>%
-      datatable(options = list(pageLength = 15, lengthMenu = c(15, 30, 50), scrollX = TRUE)) %>%
-      formatRound(columns = c("Value", "Tier.1", "Tier.2"), digits = 1)
+    
+    data_to_display <- filteredData() %>%
+      mutate(date = format(date, "%Y-%m-%d"))
+    
+    # Check which columns are available
+    available_columns <- names(data_to_display)
+    numeric_columns <- intersect(c("Value", "Tier.1", "Tier.2"), available_columns)
+    
+    print("Columns in filtered data table:")
+    print(available_columns)
+    print("Numeric columns to format:")
+    print(numeric_columns)
+    
+    # Create the datatable
+    dt <- datatable(data_to_display, 
+                    options = list(pageLength = 15, 
+                                   lengthMenu = c(15, 30, 50), 
+                                   scrollX = TRUE))
+    
+    # Apply formatting only if numeric columns exist
+    if (length(numeric_columns) > 0) {
+      dt <- formatRound(dt, columns = numeric_columns, digits = 1)
+    }
+    
+    return(dt)
   })
   
   # Download handler for filtered data
