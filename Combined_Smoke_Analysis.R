@@ -1219,35 +1219,68 @@ server <- function(input, output, session) {
     # Download data in parallel
     all_data <- future_map_dfr(urls, function(url) {
       tryCatch({
-        response <- GET(url)
-        if (status_code(response) == 200) {
-          data <- read_delim(content(response, "text"), 
-                             delim = "|", 
-                             col_names = c("Valid_date", "AQSID", "Sitename", "Parameter_name", "Reporting_units", "Value", "Averaging_period", "Data_Source", "AQI_Value", "AQI_Category", "Latitude", "Longitude", "Full_AQSID"),
-                             col_types = cols(
-                               Valid_date = col_character(),
-                               AQSID = col_character(),
-                               Sitename = col_character(),
-                               Parameter_name = col_character(),
-                               Reporting_units = col_character(),
-                               Value = col_double(),
-                               Averaging_period = col_character(),
-                               Data_Source = col_character(),
-                               AQI_Value = col_integer(),
-                               AQI_Category = col_character(),
-                               Latitude = col_double(),
-                               Longitude = col_double(),
-                               Full_AQSID = col_character()
-                             ))
-          return(data)
+        response <- httr::GET(url) # Use httr::GET explicitly if needed
+        status <- httr::status_code(response) # Get status code once
+        
+        if (status == 200) {
+          # Get content only if status is OK
+          file_content <- httr::content(response, "text", encoding = "UTF-8") # Specify encoding
+          
+          # Basic check for empty content or common error indicators in HTML/XML
+          # Adjust the threshold (e.g., 50) if valid files can be very small
+          if (is.null(file_content) || nchar(file_content) < 50 || grepl("<html|<error|not found|forbidden", file_content, ignore.case = TRUE)) {
+            warning(paste("File content seems empty or invalid for URL (Status 200):", url))
+            return(NULL) # Treat as failed download, return NULL data frame row
+          }
+          
+          # Proceed with reading only if content seems valid
+          data <- readr::read_delim(
+            file_content, # Use the retrieved content
+            delim = "|",
+            col_names = c("Valid_date", "AQSID", "Sitename", "Parameter_name", "Reporting_units", "Value", "Averaging_period", "Data_Source", "AQI_Value", "AQI_Category", "Latitude", "Longitude", "Full_AQSID"),
+            col_types = readr::cols( # Use readr::cols explicitly
+              Valid_date = col_character(),
+              AQSID = col_character(),
+              Sitename = col_character(),
+              Parameter_name = col_character(),
+              Reporting_units = col_character(),
+              Value = col_double(),
+              Averaging_period = col_character(),
+              Data_Source = col_character(),
+              AQI_Value = col_integer(), # Keep as integer if it should be
+              AQI_Category = col_character(),
+              Latitude = col_double(),
+              Longitude = col_double(),
+              Full_AQSID = col_character()
+            ),
+            guess_max = 0 # Prevent guessing if explicit types are given
+          )
+          
+          # Minimal check on resulting data structure (optional but good practice)
+          if(nrow(data) == 0 && ncol(data) > 0 ) {
+            # This case might happen if the file has headers but no data rows
+            # It's likely valid, but you could add a warning if needed.
+          } else if (nrow(data) == 0 && ncol(data) == 0) {
+            # This indicates read_delim failed to produce a meaningful data frame
+            warning(paste("read_delim resulted in empty data frame structure for URL:", url))
+            return(NULL)
+          }
+          
+          return(data) # Return the successfully read data
+          
         } else {
-          return(NULL)
+          # Log non-200 status codes clearly, but don't treat as a fatal error for the whole process
+          # Use message() instead of warning() for expected failures like future dates
+          message(paste("Skipping URL due to status code", status, ":", url))
+          return(NULL) # IMPORTANT: Return NULL for non-200 status
         }
+        
       }, error = function(e) {
-        warning(paste("Error downloading data for URL:", url, "-", conditionMessage(e)))
-        return(NULL)
+        # Catch any other unexpected errors during GET or processing
+        warning(paste("Error processing URL:", url, "-", conditionMessage(e)))
+        return(NULL) # Return NULL data frame row on error
       })
-    }, .progress = TRUE)
+    }, .progress = TRUE) # Keep progress bar
     
     # Process combined data
     if (!is.null(all_data) && nrow(all_data) > 0) {
